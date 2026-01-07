@@ -26,12 +26,14 @@ def rebuild_master_index(directory="/var/www/html/blacklist"):
 
     print(f"Rebuilt index_all.txt with {len(all_entries)} entries")
 
+
 # =====================================================================
 # CONFIG
 # =====================================================================
 LOG_FILE = Path("/home/dco/Honeypot/output.log")
 OUT_DIR  = Path("/var/www/html/blacklist")
 
+# Regex ambil IP setelah kata "from"
 SRC_IP_RE = re.compile(r'from\s+(\d{1,3}(?:\.\d{1,3}){3})')
 
 def is_public_ip(ipstr):
@@ -40,6 +42,7 @@ def is_public_ip(ipstr):
         return ip.is_global
     except ValueError:
         return False
+
 
 # =====================================================================
 # 2. MAIN PROCESS
@@ -55,12 +58,12 @@ def main():
     timestamp_now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     out_file = OUT_DIR / f"blacklist-{today}.txt"
 
+    # Load existing IP only
     existing_ips = set()
     if out_file.exists():
         with out_file.open("r") as fh:
             for line in fh:
-                parts = line.strip().split("|")
-                ip_only = parts[0].strip()
+                ip_only = line.split("|")[0].strip()
                 existing_ips.add(ip_only)
 
     new_ips = set()
@@ -72,22 +75,27 @@ def main():
                 continue
 
             src_ip = m.group(1)
-            if is_public_ip(src_ip) and src_ip not in existing_ips:
-                new_ips.add(src_ip)
+
+            # Tentukan tag PUBLIC vs PRIVATE
+            tag = "PUBLIC" if is_public_ip(src_ip) else "PRIVATE"
+
+            if src_ip not in existing_ips:
+                new_ips.add((src_ip, tag))
 
     if not new_ips:
-        print("No new public IPs found.")
+        print("No new IPs found.")
         return
 
-    # Append dengan timestamp
+    # Append IPs with timestamp and tag
     with out_file.open("a") as fh:
-        for ip in sorted(new_ips):
-            fh.write(f"{ip} | {timestamp_now}\n")
+        for ip, tag in sorted(new_ips):
+            fh.write(f"{ip} | {timestamp_now} | {tag}\n")
 
     print(f"Added {len(new_ips)} IP(s) to {out_file}")
 
     # Update master index
     rebuild_master_index(str(OUT_DIR))
+
 
 # =====================================================================
 # RUN
