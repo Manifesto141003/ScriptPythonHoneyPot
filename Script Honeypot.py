@@ -4,10 +4,30 @@ import re
 import ipaddress
 from pathlib import Path
 from datetime import datetime
+import glob
 
-# CONFIG
+# === FUNGSI BANGUN INDEX MASTER ===
+def rebuild_master_index(directory="/var/www/html/blacklist"):
+    output_file = f"{directory}/index_all.txt"
+    all_ips = set()
+
+    for file in glob.glob(f"{directory}/blacklist-*.txt"):
+        with open(file, "r") as f:
+            for line in f:
+                ip = line.strip()
+                if ip:
+                    all_ips.add(ip)
+
+    with open(output_file, "w") as f:
+        for ip in sorted(all_ips):
+            f.write(ip + "\n")
+
+    print(f"Rebuilt index_all.txt with {len(all_ips)} IPs")
+
+
+# === CONFIG ===
 LOG_FILE = Path("/home/dco/Honeypot/output.log")
-OUT_DIR  = Path("/var/www/blacklist")
+OUT_DIR  = Path("/var/www/html/blacklist")
 
 # regex ambil IP setelah kata 'from'
 SRC_IP_RE = re.compile(r'from\s+(\d{1,3}(?:\.\d{1,3}){3})')
@@ -29,7 +49,7 @@ def main():
     today = datetime.utcnow().strftime("%Y%m%d")
     out_file = OUT_DIR / f"blacklist-{today}.txt"
 
-    # load existing IPs (kalau file hari ini sudah ada)
+    # load existing IPs dari file hari ini
     existing_ips = set()
     if out_file.exists():
         with out_file.open("r") as fh:
@@ -52,7 +72,7 @@ def main():
         print("No new public IPs found.")
         return
 
-    # append ke file harian
+    # tulis ip baru ke file harian
     with out_file.open("a") as fh:
         for ip in sorted(new_ips):
             fh.write(ip + "\n")
@@ -61,3 +81,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # === PANGGIL SETELAH UPDATE FILE HARIAN ===
+    rebuild_master_index("/var/www/html/blacklist")
