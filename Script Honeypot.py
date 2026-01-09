@@ -42,7 +42,7 @@ def process_syslog():
             continue
         
         # Nama blacklist sesuai tanggal log
-        blacklist_file = f"/var/log/honeypot-blacklist-{date_str}.txt"
+        blacklist_file = f"/var/www/html/blacklist/blacklist-{date_str}.txt"
 
         # Ambil semua IP valid di line
         ips = re.findall(ip_regex, line)
