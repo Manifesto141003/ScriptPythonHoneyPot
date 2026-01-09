@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import re
+import gzip
 import ipaddress
 from pathlib import Path
 from datetime import datetime
@@ -9,10 +10,9 @@ import glob
 # ============================================================
 # CONFIG
 # ============================================================
-LOG_FILE = Path("/var/log/syslog")
 OUT_DIR = Path("/var/www/html/blacklist")
 
-# Only allow IPs AFTER "to"
+# Only allow specific destination IPs after "to"
 ALLOWED_TO_IPS = {
     "10.102.101.12",
     "10.102.101.13",
@@ -34,12 +34,12 @@ MONTH_MAP = {
     'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
 }
 
+
 # ============================================================
 # FUNCTIONS
 # ============================================================
 
 def parse_unix_timestamp(line):
-    """Return YYYY-MM-DD and full timestamp from syslog line."""
     m = UNIX_TIME_RE.match(line)
     if not m:
         return None, None
@@ -80,7 +80,6 @@ def rebuild_master_index():
 
                 data[ip]["timestamps"].append(ts)
 
-    # Write merged index
     idx_file = OUT_DIR / "index_all.txt"
     with idx_file.open("w") as f:
         for ip in sorted(data.keys()):
@@ -93,47 +92,59 @@ def rebuild_master_index():
 # ============================================================
 
 def main():
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    with LOG_FILE.open("r", errors="ignore") as fh:
-        for line in fh:
+    # Collect all syslog files including gz
+    log_files = sorted(glob.glob("/var/log/syslog*"))
 
-            # Find "from X to Y"
-            m = LOG_RE.search(line)
-            if not m:
-                continue
+    for log_path in log_files:
 
-            src_ip, dst_ip = m.groups()
+        # Check if file is gzipped
+        if log_path.endswith(".gz"):
+            log_fh = gzip.open(log_path, "rt", errors="ignore")
+        else:
+            log_fh = open(log_path, "r", errors="ignore")
 
-            # Check allowed "to"
-            if dst_ip not in ALLOWED_TO_IPS:
-                continue
+        with log_fh as fh:
+            for line in fh:
 
-            # Parse actual log timestamp
-            date_str, full_ts = parse_unix_timestamp(line)
-            if not date_str:
-                continue
+                # Find from X to Y
+                m = LOG_RE.search(line)
+                if not m:
+                    continue
 
-            # Output file per date
-            out_file = OUT_DIR / f"blacklist-{date_str}.txt"
+                src_ip, dst_ip = m.groups()
 
-            # Check existing IP (no duplicate)
-            existing = set()
-            if out_file.exists():
-                with out_file.open("r") as f:
-                    for l in f:
-                        existing.add(l.split("|")[0].strip())
+                # Only process if dst_ip is allowed
+                if dst_ip not in ALLOWED_TO_IPS:
+                    continue
 
-            if src_ip in existing:
-                continue
+                # Parse timestamp from the log line
+                date_str, full_ts = parse_unix_timestamp(line)
+                if not date_str:
+                    continue
 
-            ip_type = "PUBLIC" if is_public_ip(src_ip) else "PRIVATE"
+                # Output file based on REAL log date
+                out_file = OUT_DIR / f"blacklist-{date_str}.txt"
 
-            # Write new IP entry
-            with out_file.open("a") as f:
-                f.write(f"{src_ip} | {full_ts} | {ip_type}\n")
+                # Load existing IPs
+                existing = set()
+                if out_file.exists():
+                    with out_file.open("r") as f:
+                        for l in f:
+                            existing.add(l.split("|")[0].strip())
 
-    # Rebuild index
+                if src_ip in existing:
+                    continue
+
+                ip_type = "PUBLIC" if is_public_ip(src_ip) else "PRIVATE"
+
+                # Append IP
+                with out_file.open("a") as f:
+                    f.write(f"{src_ip} | {full_ts} | {ip_type}\n")
+
+    # Rebuild combined index
     rebuild_master_index()
 
 
