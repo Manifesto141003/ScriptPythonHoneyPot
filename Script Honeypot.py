@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-from scapy.all import sniff, IP, TCP
+import re
+import datetime
+import os
 
-# Honeypot IPs & names
+SYSLOG_PATH = "/var/log/syslog"
+
 HONEYPOT_IPS = {
     "10.102.101.12": "hnn01",
     "10.102.101.13": "hnn02",
@@ -9,51 +12,63 @@ HONEYPOT_IPS = {
     "10.102.101.15": "hnn04",
 }
 
-# Excluded IPs (tidak terdeteksi sebagai port scan)
-EXCLUDED_IPS = {
-    "10.102.101.44",
-}
+def extract_date_from_syslog_line(line):
+    """Ambil tanggal dari format default syslog: 'Jan  8 06:31:04' """
+    try:
+        parts = line.split()
+        month = parts[0]
+        day = parts[1]
+        year = datetime.datetime.now().year  # syslog tidak ada tahun
+        date_str = f"{month} {day} {year}"
+        date_obj = datetime.datetime.strptime(date_str, "%b %d %Y")
+        return date_obj.strftime("%Y-%m-%d")
+    except:
+        return None
 
-# Mencegah duplikasi alert
-SEEN = set()
-
-
-def detect_port_scan(packet):
-    if IP not in packet or TCP not in packet:
+def process_syslog():
+    if not os.path.exists(SYSLOG_PATH):
+        print("Syslog tidak ditemukan.")
         return
 
-    src = packet[IP].src
-    dst = packet[IP].dst
-    dport = packet[TCP].dport
-    flags = packet[TCP].flags
+    with open(SYSLOG_PATH, "r") as f:
+        lines = f.readlines()
 
-    # Hanya deteksi SYN
-    if flags != "S":
-        return
+    # Regex match IP
+    ip_regex = r"10\.102\.101\.\d+"
 
-    # Abaikan IP yang di-exclude
-    if src in EXCLUDED_IPS:
-        return
+    for line in lines:
+        date_str = extract_date_from_syslog_line(line)
+        if not date_str:
+            continue
+        
+        # Nama blacklist sesuai tanggal log
+        blacklist_file = f"/var/log/honeypot-blacklist-{date_str}.txt"
 
-    # Cek apakah traffic menuju salah satu honeypot
-    if src not in HONEYPOT_IPS and dst not in HONEYPOT_IPS:
-        return
+        # Ambil semua IP valid di line
+        ips = re.findall(ip_regex, line)
+        if not ips:
+            continue
 
-    # Tentukan nama honeypot
-    honeypot_name = ""
-    if dst in HONEYPOT_IPS:
-        honeypot_name = HONEYPOT_IPS[dst]
-    elif src in HONEYPOT_IPS:
-        honeypot_name = HONEYPOT_IPS[src]
+        # Pastikan file ada
+        if not os.path.exists(blacklist_file):
+            open(blacklist_file, "a").close()
 
-    # Cegah log ganda
-    key = (src, dst, dport)
-    if key in SEEN:
-        return
-    SEEN.add(key)
+        # Masukkan IP ke file blacklist (tanpa duplikat)
+        with open(blacklist_file, "r+") as bf:
+            existing = bf.read().split()
 
-    print(f"Port scan detected from {src} to {dst} ({honeypot_name}), port {dport}")
+            for ip in ips:
+                if ip in existing:
+                    continue  # skip duplicate
 
+                # Jika IP ada di mapping internal → tambahkan nama host
+                label = HONEYPOT_IPS.get(ip, "")
+                if label:
+                    bf.write(f"{ip} ({label})\n")
+                else:
+                    bf.write(f"{ip}\n")
 
-print("Starting honeypot port scan detector...")
-sniff(filter="tcp", prn=detect_port_scan, store=0)
+    print("Selesai update blacklist berdasarkan syslog.")
+
+if __name__ == "__main__":
+    process_syslog()
