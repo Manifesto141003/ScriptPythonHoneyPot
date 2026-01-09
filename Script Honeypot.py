@@ -13,28 +13,26 @@ import glob
 LOG_FILE = Path("/var/log/syslog")
 OUT_DIR  = Path("/var/www/html/blacklist")
 
+# IP honeypot internal yang HARUS di-exclude
 EXCLUDED_IPS = {
-    "10.102.101.12",
-    "10.102.101.13",
-    "10.102.101.14",
-    "10.102.101.15",
+    "10.102.101.12",  # hnn01
+    "10.102.101.13",  # hnn02
+    "10.102.101.14",  # hnn03
+    "10.102.101.15",  # hnn04
+    "10.102.101.44",  # IP tambahan yang kamu exclude
 }
 
+# Port yang tidak dianggap port scan (false positive)
 EXCLUDED_PORTS = {7680, 8289, 14062}
 
-# Ambil IP dari "from <ip>" tapi bukan yang setelah "to", dan dari ::ffff: (Cowrie)
+# Regex ambil IP hanya dari “from <ip>”, TIDAK ambil yang setelah "to"
 SRC_IP_RE = re.compile(
-    r'from\s+((?:\d{1,3}\.){3}\d{1,3})(?!\s*to)'
-    r'|::ffff:((?:\d{1,3}\.){3}\d{1,3})'
+    r'from\s+((?:\d{1,3}\.){3}\d{1,3})(?!\s*to)'     # ambil IP setelah from
+    r'|::ffff:((?:\d{1,3}\.){3}\d{1,3})'             # cowrie IPv6 mapped
 )
 
+# Ambil port bila ada
 PORT_RE = re.compile(r'port\s+(\d+)')
-
-# syslog format: "Jan  9 01:53:10"
-SYSLOG_DATE_RE = re.compile(r'^([A-Z][a-z]{2})\s+(\d{1,2})\s+\d{2}:\d{2}:\d{2}')
-
-# cowrie ISO timestamp: 2026-01-08T01:54:10+0000
-COWRIE_DATE_RE = re.compile(r'(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}')
 
 
 # =====================================================================
@@ -67,29 +65,15 @@ def rebuild_master_index(directory=OUT_DIR):
     print(f"Rebuilt index_all.txt with {len(all_entries)} unique entries")
 
 
-def get_log_datetime(line):
-    """Ambil tanggal dari log, syslog atau cowrie"""
-    # Cowrie ISO
-    m = COWRIE_DATE_RE.search(line)
+def get_log_file_name(line):
+    """Gunakan tanggal log, atau fallback hari ini."""
+    m = re.search(r'(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}', line)
     if m:
-        return datetime.strptime(m.group(1), "%Y-%m-%d")
+        y, mo, d = m.group(1).split("-")
+        return OUT_DIR / f"blacklist-{y}{mo}{d}.txt"
 
-    # Syslog
-    m = SYSLOG_DATE_RE.match(line)
-    if m:
-        month_str, day_str = m.groups()
-        month = datetime.strptime(month_str, "%b").month
-        day = int(day_str)
-        year = datetime.utcnow().year
-        return datetime(year, month, day)
-
-    # fallback hari ini
-    return datetime.utcnow()
-
-
-def get_log_file_name(dt: datetime):
-    """Buat file blacklist per tanggal log"""
-    return OUT_DIR / f"blacklist-{dt.strftime('%Y%m%d')}.txt"
+    today = datetime.utcnow().strftime("%Y%m%d")
+    return OUT_DIR / f"blacklist-{today}.txt"
 
 
 # =====================================================================
@@ -108,7 +92,9 @@ def main():
     with LOG_FILE.open("r", encoding="utf-8", errors="ignore") as fh:
         for line in fh:
 
+            # ---------------------------
             # 1. Ambil IP sumber
+            # ---------------------------
             m = SRC_IP_RE.search(line)
             if not m:
                 continue
@@ -117,24 +103,38 @@ def main():
             if not src_ip:
                 continue
 
+            # ---------------------------
             # 2. Exclude IP tertentu
+            # ---------------------------
             if src_ip in EXCLUDED_IPS:
                 continue
 
+            # ---------------------------
             # 3. Ambil port (jika ada)
+            # ---------------------------
             pm = PORT_RE.search(line)
-            if pm and int(pm.group(1)) in EXCLUDED_PORTS:
-                continue
+            if pm:
+                port = int(pm.group(1))
 
-            # 4. Tentukan PUBLIC vs PRIVATE
+                # skip port tertentu
+                if port in EXCLUDED_PORTS:
+                    continue
+
+            # ---------------------------
+            # 4. PUBLIC vs PRIVATE
+            # ---------------------------
             tag = "PUBLIC" if is_public_ip(src_ip) else "PRIVATE"
+            timestamp_now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
+            # ---------------------------
             # 5. Tentukan file blacklist target berdasarkan tanggal log
-            dt = get_log_datetime(line)
-            out_file = get_log_file_name(dt)
+            # ---------------------------
+            out_file = get_log_file_name(line)
             out_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # 6. Hindari duplikasi IP di file yang sama
+            # ---------------------------
+            # 6. Hindari duplikasi IP
+            # ---------------------------
             existing_ips = set()
             if out_file.exists():
                 with out_file.open("r") as fh_exist:
@@ -144,9 +144,11 @@ def main():
             if src_ip in existing_ips:
                 continue
 
-            # 7. Tulis IP baru
+            # ---------------------------
+            # 7. Tulis IP baru ke file blacklist
+            # ---------------------------
             with out_file.open("a") as fh_append:
-                fh_append.write(f"{src_ip} | {tag}\n")
+                fh_append.write(f"{src_ip} | {timestamp_now} | {tag}\n")
                 new_ips_total += 1
 
     print(f"Added {new_ips_total} new unique IP(s)")
